@@ -1,0 +1,28 @@
+{
+  "paper-cup": {
+    "base_url": "http://127.0.0.1:18880",
+    "allowed_paths": ["/?page=invoices", "/?page=invoice&id=REPLACE_A", "/?page=invoice&id=REPLACE_B"],
+    "resources": [
+      {"path": "/?page=invoice&id=REPLACE_A", "owner": "A", "marker": "REPLACE_WITH_PRIVATE_INVOICE_A_TEXT"},
+      {"path": "/?page=invoice&id=REPLACE_B", "owner": "B", "marker": "REPLACE_WITH_PRIVATE_INVOICE_B_TEXT"}
+    ],
+    "accounts": {
+      "A": {
+        "path": "/?page=login",
+        "fields_env": {"username": "PAPER_CUP_USER_A", "password": "PAPER_CUP_PASSWORD_A"},
+        "fields": {"action": "login"},
+        "csrf_field": "csrf",
+        "verify_path": "/?page=invoices",
+        "success_marker": "REPLACE_WITH_AUTHENTICATED_ACCOUNT_A_TEXT"
+      },
+      "B": {
+        "path": "/?page=login",
+        "fields_env": {"username": "PAPER_CUP_USER_B", "password": "PAPER_CUP_PASSWORD_B"},
+        "fields": {"action": "login"},
+        "csrf_field": "csrf",
+        "verify_path": "/?page=invoices",
+        "success_marker": "REPLACE_WITH_AUTHENTICATED_ACCOUNT_B_TEXT"
+      }
+    }
+  }
+}

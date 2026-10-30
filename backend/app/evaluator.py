@@ -41,12 +41,14 @@ def apply_evaluation(agent, attempt, evaluation):
     if priority[evaluation["verdict"]] >= priority[check.verdict]:
         check.verdict, check.reason = evaluation["verdict"], evaluation["reason"]
     if attempt.reproduced:
-        key = f"orders:{check.id}"
+        key = evaluation.get("finding_key", f"orders:{check.id}")
         finding = next((f for f in agent.findings if f.key == key), None)
         if finding is None:
-            finding = Finding(id=attempt.id, key=key, title="Order data exposed without required authorization",
-                              impact="Another account's order contents can be read.",
-                              remediation="Authenticate and enforce object ownership on every order lookup.",
+            web = key.startswith("web-access:")
+            finding = Finding(id=attempt.id, key=key, title="Private web content exposed without authorization" if web else "Order data exposed without required authorization",
+                              cvss=evaluation.get("cvss"), severity=evaluation.get("severity"),
+                              impact="Another account's private content can be read." if web else "Another account's order contents can be read.",
+                              remediation="Authenticate and enforce object ownership on every resource lookup.",
                               attempt_ids=[], evidence_ids=[], agent_run_ids=[agent.id])
             agent.findings.append(finding)
         finding.attempt_ids.append(attempt.id)

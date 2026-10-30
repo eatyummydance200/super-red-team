@@ -1,0 +1,14 @@
+[Unit]
+Description=Proxy Super Red Team to Kubernetes Service
+Requires=super-red-team-proxy.socket
+After=network-online.target kubelet.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 10.96.20.11:8000
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

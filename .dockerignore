@@ -1,0 +1,12 @@
+.git
+.venv
+.uv-cache
+.integration
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+**/*.egg-info
+**/.env
+**/.env.*
+backend/data
+backend/targets.local.json

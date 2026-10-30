@@ -1,0 +1,144 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: super-red-team
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: super-red-team-data
+spec:
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  claimRef:
+    namespace: super-red-team
+    name: backend-data
+  local:
+    path: /var/lib/super-red-team/data
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [homeserver]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backend-data
+  namespace: super-red-team
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: ""
+  volumeName: super-red-team-data
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: super-red-team
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: super-red-team-backend
+  template:
+    metadata:
+      labels:
+        app: super-red-team-backend
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: homeserver
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: docker.io/homeserver/super-red-team:20261031
+          imagePullPolicy: Never
+          envFrom:
+            - secretRef:
+                name: backend-credentials
+          env:
+            - name: DATA_DIR
+              value: /app/data
+            - name: REQUIRE_API_AUTH
+              value: "true"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+          resources:
+            requests:
+              cpu: 150m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: backend-data
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: super-red-team
+spec:
+  type: ClusterIP
+  clusterIP: 10.96.20.11
+  selector:
+    app: super-red-team-backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

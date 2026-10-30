@@ -25,21 +25,24 @@ class AgentConfig(Contract):
 
 class ExecutionRequest(Contract):
     mode: Literal["mock", "live"] = "mock"
-    scenario: Literal["orders-v1"] = "orders-v1"
+    scenario: Literal["orders-v1", "web-access-v1"] = "orders-v1"
+    target_id: str | None = Field(default=None, min_length=1, max_length=100)
     environment: Literal["vulnerable", "fixed"] = "vulnerable"
     collaboration: Literal["independent"] = "independent"
     information: Literal["gray-box"] = "gray-box"
     tools: list[Literal["http"]] = Field(default_factory=lambda: ["http"], min_length=1, max_length=1)
     state_changes: Literal[False] = False
     agents: list[AgentConfig] = Field(default_factory=lambda: [
-        AgentConfig(model="mock/explorer-a"), AgentConfig(model="mock/explorer-b")
-    ], min_length=2, max_length=2)
+        AgentConfig(model=f"mock/explorer-{slot}") for slot in "abc"
+    ], min_length=2, max_length=3)
     budget: Budget = Field(default_factory=Budget)
 
     @model_validator(mode="after")
     def distinct_models(self):
-        if self.agents[0].model == self.agents[1].model:
-            raise ValueError("Two distinct registered models are required")
+        if (self.scenario == "web-access-v1") != (self.target_id is not None):
+            raise ValueError("web-access-v1 requires target_id; orders-v1 must not set target_id")
+        if len({a.model for a in self.agents}) != len(self.agents):
+            raise ValueError("Distinct registered models are required")
         return self
 
 
@@ -94,6 +97,9 @@ class TestAttempt(Contract):
     reproduced: bool | None = None
     evaluation: dict | None = None
     error: str | None = None
+    token_usage: int | None = None
+    estimated_cost: float | None = None
+    model_duration: float | None = None
 
 
 class Finding(Contract):
@@ -105,18 +111,24 @@ class Finding(Contract):
     attempt_ids: list[str]
     evidence_ids: list[str]
     agent_run_ids: list[str]
+    cvss: float | None = Field(default=None, ge=0, le=10)
+    severity: Literal["Critical", "High", "Medium", "Low"] | None = None
+    verdict: Literal["confirmed", "needs_review", "false_positive"] = "confirmed"
 
 
 class AgentResult(Contract):
     id: str
     execution_id: str
     model: str
+    model_name: str = ""
     role: str
     prompt_version: str
     instructions: str = ""
     scenario_version: str = "orders-v1"
     environment_version: str
     status: Literal["pending", "running", "completed", "failed", "cancelled"] = "pending"
+    progress: float = Field(default=0, ge=0, le=1)
+    phase: str = "pending"
     started_at: str | None = None
     ended_at: str | None = None
     duration: float | None = None
@@ -153,3 +165,5 @@ class Execution(Contract):
     error: str | None = None
     agents: list[AgentResult]
     events: list[dict] = Field(default_factory=list)
+    scenario_name: str = ""
+    allowed_paths: list[str] = Field(default_factory=list)

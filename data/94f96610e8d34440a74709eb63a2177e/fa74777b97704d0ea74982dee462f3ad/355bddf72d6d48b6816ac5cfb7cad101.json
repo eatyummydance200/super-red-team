@@ -1,0 +1,1 @@
+{"body": {"id": "101", "item": "notebook", "owner": "A", "total": 12}, "duration": 0.006072500022128224, "request": {"account": "A", "method": "GET", "path": "/orders/101"}, "status_code": 200}

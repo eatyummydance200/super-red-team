@@ -1,0 +1,15 @@
+services:
+  backend:
+    build: .
+    env_file: backend/.env
+    environment:
+      DATA_DIR: /app/data
+      REQUIRE_API_AUTH: "true"
+      REDTEAM_TARGETS_FILE: ""
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - red-team-data:/app/data
+    restart: unless-stopped
+volumes:
+  red-team-data:

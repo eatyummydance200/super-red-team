@@ -1,0 +1,9 @@
+[Unit]
+Description=Local socket for Super Red Team Kubernetes service
+
+[Socket]
+ListenStream=127.0.0.1:18082
+NoDelay=true
+
+[Install]
+WantedBy=sockets.target

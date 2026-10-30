@@ -1,6 +1,47 @@
 # Adaptive Red Team — Super Red Team
 
+프론트 연동(3모델, 인증/CORS, API 어댑터 패치, 로컬 시연과 서버 배포)은 [연동 인계서](docs/frontend-integration.md)를 먼저 참고하세요. 새 기본 실행은 3모델이며 기존 2모델 요청과 저장 기록도 읽을 수 있습니다.
+
 허가된 로컬 주문 API에서 서로 다른 두 모델을 **Independent** 방식으로 실행하는 AI Orchestrator Backend MVP입니다. API 키 없이 Mock으로 실행할 수 있습니다. 프론트엔드 시안은 변경하지 않았습니다.
+
+## 실제 로컬 웹 서버의 접근 권한 점검
+
+`web-access-v1`은 백엔드 운영자가 등록한 실제 루프백 웹 서버에 HTTP 요청을 보냅니다. `http://127.0.0.1:18880` 같은 명시적 IP와 포트만 지원하며, 일반 도메인·원격 IP는 이번 버전에서 지원하지 않습니다. 임의 URL을 실행 요청으로 받지 않습니다. 기존 `orders-v1`은 그대로 동작합니다.
+
+1. `backend/targets.example.json`을 `backend/targets.local.json`으로 복사합니다.
+2. 실제 청구서 상세 경로를 `allowed_paths`와 `resources`에 등록합니다. 예시의 `invoice` 경로와 ID는 **자리표시자이며 실제 경로를 확인한 값이 아닙니다**. GET으로 상태를 바꾸는 경로는 등록하지 마세요.
+3. 각 리소스의 `owner`를 A/B로 지정하고, 해당 청구서에만 나오는 고유한 비공개 문구를 `marker`로 지정합니다(8자 이상). 두 계정에 각각 소유 리소스가 필요합니다. 공통 메뉴나 로그인 페이지 문구, 계정 비밀번호를 사용하지 마세요.
+4. 로그인 후 확인할 `verify_path`와 계정별 `success_marker`를 설정합니다. 성공 문구는 비로그인 페이지에 나타나면 안 됩니다. 폼의 고정값은 `fields`, 자격 증명 환경변수 이름은 `fields_env`, 숨김 CSRF 필드 이름은 `csrf_field`에 둡니다. CSRF가 없으면 `csrf_field`를 생략합니다.
+5. 아래 환경변수를 설정한 터미널에서 백엔드를 시작하거나 재시작합니다. 파일 경로는 시작 시 읽습니다. 설정 파일과 자격 증명은 실행 결과나 모델 프롬프트에 넣지 않습니다.
+
+저장소 루트 기준 PowerShell:
+
+```powershell
+$env:REDTEAM_TARGETS_FILE = (Resolve-Path backend/targets.local.json).Path
+$env:PAPER_CUP_USER_A = '<test-user-a>'
+$env:PAPER_CUP_PASSWORD_A = '<test-password-a>'
+$env:PAPER_CUP_USER_B = '<test-user-b>'
+$env:PAPER_CUP_PASSWORD_B = '<test-password-b>'
+.venv/Scripts/python.exe -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8000 --workers 1
+```
+
+별도 터미널에서 등록 확인 및 실행:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/scenarios
+$body = @{ scenario = 'web-access-v1'; target_id = 'paper-cup'; mode = 'mock' } | ConvertTo-Json
+$run = Invoke-RestMethod http://127.0.0.1:8000/executions -Method Post -ContentType application/json -Body $body
+Invoke-RestMethod "http://127.0.0.1:8000/executions/$($run.execution_id)"
+Invoke-RestMethod "http://127.0.0.1:8000/executions/$($run.execution_id)/report"
+```
+
+**웹 시나리오의 `mock`도 실제 서버에 로그인하고 HTTP 요청을 보냅니다.** Mock은 요청 순서를 결정하는 모델만 대체합니다. 실제 AI 탐색은 기존 live 설정과 두 live 모델을 지정해 사용합니다. 모델에는 허용 GET 경로와 리소스 소유 계정만 전달하며, 자격 증명·판정용 marker는 전달하지 않습니다.
+
+계정별·에이전트별 세션을 분리하고, 익명 요청은 로그인 쿠키를 사용하지 않습니다. 로그인 POST만 예외적으로 허용하며 리다이렉트는 따라가지 않습니다. 로그인은 설정된 확인 페이지를 직접 GET해서 검증합니다. 각 응답은 스트리밍 중 32KiB로 제한합니다. 요청 예산은 모델이 선택한 GET 횟수이며, 첫 로그인에는 계정당 최대 3회의 추가 요청이 발생합니다. 전체 에이전트 시간 제한과 도구 호출당 5초 제한은 로그인에도 적용됩니다.
+
+소유 계정의 정상 조회에서 marker를 확인한 뒤, 다른 계정 또는 익명 응답에 같은 marker가 있으면 노출로 판정합니다. HTTP 상태만으로 노출을 판단하지 않습니다. 등록 marker가 없거나 정상 조회가 실패하면 `needs_review`로 남깁니다. 리소스별 소유자·타 계정·익명 검사를 모두 판정하지 못하면 보고서의 `comparison.complete=false`입니다.
+
+SQL injection·XSS·전체 사이트 자동 탐색·브라우저 실행은 포함하지 않습니다. 두 에이전트는 실제 서버 데이터를 공유합니다. 증거에는 응답 본문이 저장되므로 청구서 등 비공개 내용이 포함될 수 있습니다. 계정 자격 증명과 수집한 세션 쿠키 값은 본문에서 가리고, 응답 헤더와 로그인 본문은 저장하지 않습니다. 로컬 백엔드 API 자체의 인증은 기존과 같이 없으므로 루프백 바인딩으로 실행합니다.
 
 ## 설치와 실행
 
@@ -34,9 +75,35 @@ POST는 레코드 저장 후 **202**와 ID를 반환합니다. 프론트는 1~2�
 
 ## 실제 모델 연결
 
-LiteLLM 어댑터는 OpenAI와 Anthropic 두 공급자 모델을 지원합니다. 모델 ID는 **서버 시작 전** 환경변수 `MODEL_A`, `MODEL_B`로 등록하며 요청에서 임의 공급자나 URL을 등록할 수 없습니다. 기본 ID의 사용 가능 여부는 공급자 계정에서 확인해야 합니다.
+LiteLLM 어댑터는 OpenAI, Anthropic, Gemini 모델을 지원합니다. 모델 ID는 **서버 시작 전** 환경변수 `MODEL_A`, `MODEL_B`로 등록하며 요청에서 임의 공급자나 URL을 등록할 수 없습니다. `openai/`는 `OPENAI_API_KEY`, `anthropic/`는 `ANTHROPIC_API_KEY`, `gemini/`는 `GEMINI_API_KEY`를 사용합니다. 기본 ID의 사용 가능 여부는 공급자 계정에서 확인해야 합니다.
 
 `backend/.env.example`은 환경변수 목록입니다. `.env`를 자동으로 읽지는 않습니다. PowerShell에서 서버를 시작하기 전에 설정하세요. 빈 요금 변수를 설정하지 않거나 제거하면 비용은 알 수 없음으로 처리합니다.
+
+로컬 비밀 설정은 Git에서 제외되는 `backend/.env`에 저장합니다. 저장소 루트에서 `./start.ps1`을 실행하면 이 파일을 명시적으로 읽고 `127.0.0.1:8000`으로 시작합니다. 기존에 실행 중인 프로세스는 재시작해야 반영됩니다. 이미 터미널에 설정한 환경변수가 있으면 `.env`보다 우선합니다.
+
+Gemini 두 모델을 같은 키로 비교하려면 다음 항목을 설정합니다:
+
+```dotenv
+GEMINI_API_KEY=<your-key>
+MODEL_A=gemini/gemini-3.6-flash
+MODEL_B=gemini/gemini-3.5-flash-lite
+LITELLM_LOCAL_MODEL_COST_MAP=True
+```
+
+실행 요청도 등록한 두 모델을 지정합니다. `mode=live`는 유료 API를 호출할 수 있으며, 모델 목록은 `GET /models`에서 확인합니다. 아래 요청은 내장 주문 시나리오이며, 실제 웹 서버를 점검하려면 위의 대상 등록 설정을 완료하고 `scenario=web-access-v1`, `target_id=paper-cup`을 추가하세요.
+
+```powershell
+$body = @{
+  mode = 'live'
+  agents = @(
+    @{ model = 'gemini/gemini-3.6-flash' },
+    @{ model = 'gemini/gemini-3.5-flash-lite' }
+  )
+} | ConvertTo-Json -Depth 5
+Invoke-RestMethod http://127.0.0.1:8000/executions -Method Post -ContentType application/json -Body $body
+```
+
+OpenAI와 Anthropic을 사용하는 경우의 수동 환경변수 설정 예시:
 
 ```powershell
 $env:OPENAI_API_KEY = '<your-key>'
@@ -67,7 +134,7 @@ Invoke-RestMethod 'http://127.0.0.1:8000/executions' -Method Post -ContentType '
 
 역할·추가 지시·모델·프롬프트 버전을 에이전트별로 설정합니다. `prompt_version=v1`만 구현되어 있습니다. `app/prompts.py`의 시스템 프롬프트와 모델 출력 스키마, 각자의 관찰·이전 가설을 매 호출에 전달합니다. 모델은 다음 HTTP 검증을 선택하거나 종료합니다. 고정 목록은 **Mock 모델 시뮬레이터에만** 있으며 실제 모델은 새 숫자 주문 ID 등 허용된 경로를 선택할 수 있습니다. 모델의 계획·가설은 권한을 변경하지 못합니다.
 
-Mock과 live 모두 같은 실행 루프, 로컬 HTTP Runner, 평가기, 저장소, 집계기를 사용합니다. live가 의미하는 것은 **실제 모델 API 호출**이며 외부 대상 테스트가 아닙니다. [LiteLLM 공식 문서](https://docs.litellm.ai/docs/)의 비동기 completion API를 사용합니다. SDK의 자동 재시도는 끄고 오케스트레이터가 일시적 오류에 한 번만 재시도합니다.
+Mock과 live 모두 같은 실행 루프, 시나리오별 HTTP Runner와 평가기, 저장소, 집계기를 사용합니다. live는 **실제 모델 API 호출**을 의미하며, 실제 웹 서버 연결 여부는 `scenario=web-access-v1`으로 선택합니다. [LiteLLM 공식 문서](https://docs.litellm.ai/docs/)의 비동기 completion API를 사용합니다. SDK의 자동 재시도는 끄고 오케스트레이터가 일시적 오류에 한 번만 재시도합니다.
 
 ## API와 계약
 
@@ -100,9 +167,9 @@ Mock과 live 모두 같은 실행 루프, 로컬 HTTP Runner, 평가기, 저장�
 
 ## 격리·예산·실패
 
-각 에이전트마다 **새 ASGI 애플리케이션과 주문 데이터**를 만듭니다. HTTPX의 ASGITransport가 실제 HTTP 요청/응답 의미론으로 로컬 앱을 호출하며 Runner는 소켓을 열지 않습니다. 외부 서버를 띄워 호출하는 방식은 아닙니다. 모델이 받을 정보·도구·예산은 동일하고, 관찰/가설 컨텍스트는 분리됩니다. 상태 변경은 전부 거부합니다. 이후 쓰기 도구를 추가한다면 공유 DB/쿠키/스토리지까지 별도 환경으로 격리해야 합니다.
+`orders-v1`에서는 각 에이전트마다 **새 ASGI 애플리케이션과 주문 데이터**를 만듭니다. HTTPX의 ASGITransport가 실제 HTTP 요청/응답 의미론으로 로컬 앱을 호출하며 해당 Runner는 소켓을 열지 않습니다. 모델이 받을 정보·도구·예산은 동일하고, 관찰/가설 컨텍스트는 분리됩니다. 주문 fixture의 상태 변경은 전부 거부합니다. `web-access-v1`의 실제 네트워크·로그인·공유 데이터 제한은 위의 웹 서버 점검 절을 참고하세요.
 
-* Gateway는 `/orders/{1~6자리 숫자}`만 받습니다. URL·쿼리·인코딩 우회·리다이렉트를 거부하고 응답 크기를 제한합니다. 로컬 fixture의 GET만 도달 가능합니다.
+* 주문 fixture의 Gateway는 `/orders/{1~6자리 숫자}`만 받습니다. URL·쿼리·인코딩 우회·리다이렉트를 거부하고 응답 크기를 제한합니다. 로컬 fixture의 GET만 도달 가능합니다.
 * 테스트 계정 토큰은 `gateway.py`/fixture 내부에만 존재합니다. 모델에는 A/B 선택자만 제공합니다. 증거는 Authorization 헤더를 저장하지 않고 계정 선택자와 본문을 저장합니다. 오류도 원문 대신 유형을 기록해 공급자 키 유출을 피합니다. 모델 API 키는 Runner에 전달하지 않습니다.
 * **에이전트별 동일 예산**: 경과 시간, HTTP 요청, 모델 호출(재시도 포함), 토큰, 선택적 비용 한도. 각 에이전트는 작업을 하나씩 수행하므로 검사·예약 구간에 await가 없어 중복 소비가 없습니다. 서로의 예산을 빌려 쓰지 않습니다. 시간/요청/모델 호출/토큰/비용 상한은 입력 스키마로도 제한합니다.
 * 호출 전에 UTF-8 바이트 수와 프레이밍 여유분으로 입력 토큰을 보수적으로 예약하고 최대 출력 토큰을 더합니다. 성공 후 실제 사용량으로 정산합니다. 실패·취소된 호출은 예약을 소비한 것으로 유지하며 알 수 없는 사용량은 합계에서 추측하지 않고 `token_usage_complete=false`로 표시합니다.
@@ -131,6 +198,8 @@ Fixture는 A의 주문 101, B의 주문 202를 동일한 초기 상태로 제공
 ```
 
 테스트는 Mock → API → 두 독립 루프 → 로컬 ASGI HTTP → 증거 파일/SQLite → 평가 → JSON 보고서 전체 흐름, 취약/수정 환경, 재시작 복구, 부분 실패, 취소, timeout, 예산, 미지원 옵션/범위 우회 거부를 검증합니다. LiteLLM은 설치된 SDK의 비동기 호출을 가짜 응답으로 검증합니다. **실제 공급자 API 호출·과금·품질은 검증하지 않았습니다.**
+
+웹 대상 확장 후 **47 passed**: 기존 35개와 웹 실행·CSRF/세션·취약/차단 판정·인증 실패·대상/경로 제한·응답 크기 제한 등을 검증했습니다. 별도 임시 루프백 HTTP 서버에 실제 소켓으로 연결하는 로그인·인증/익명 요청 테스트도 포함합니다. 사용자의 18880 서버에 대한 전체 점검 결과를 의미하지 않습니다.
 
 2026-10-31 로컬 검증 결과: Python 3.13.3, FastAPI 0.162.0, Pydantic 2.14.2, LiteLLM 1.106.6에서 **35 passed**. Uvicorn을 루프백 포트 8765로 실제 실행해 health/OpenAPI, 실행 202, polling, 보고서 HTTP 200도 확인했습니다. 두 환경 각각 총 10회 도구 호출 후 취약 환경은 고유 취약점 1건, 수정 환경은 0건이었습니다. 검증용 서버는 종료했으며 보고서 예시는 git에서 제외되는 `backend/data/smoke-vulnerable-report.json`, `backend/data/smoke-fixed-report.json`에 남겼습니다.
 

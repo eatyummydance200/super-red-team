@@ -4,12 +4,14 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from .contracts import AgentResult, Decision, Evidence, Execution, ExecutionRequest, TestAttempt
+from .contracts import AgentResult, CheckResult, Decision, Evidence, Execution, ExecutionRequest, TestAttempt
 from .evaluator import apply_evaluation, evaluate
 from .fixture import create_fixture
 from .gateway import ToolGateway
-from .prompts import SYSTEM_V1
+from .prompts import SYSTEM_V1, WEB_SYSTEM_V1
+from .targets import WebGateway, evaluate_web
 from .providers import LiteLLMProvider, MockProvider, parse_decision, transient
+from .catalog import scenarios
 
 
 def now():
@@ -21,16 +23,36 @@ class BudgetExhausted(Exception):
 
 
 class Manager:
-    def __init__(self, store, models, provider=None, evaluator=evaluate, call_timeout=15):
+    def __init__(self, store, models, provider=None, evaluator=evaluate, call_timeout=15, targets=None):
         self.store, self.models = store, models
         self.provider, self.evaluator, self.call_timeout = provider, evaluator, call_timeout
         self.tasks: dict[str, asyncio.Task] = {}
         self.active: dict[str, Execution] = {}
         self.stopping = False
+        self.targets = targets or {}
 
     def event(self, execution, agent, kind, **data):
+        messages = {
+            "execution_started": "Execution started", "execution_finished": "Execution finished",
+            "agent_started": "Independent agent started", "agent_finished": "Agent finished",
+            "model_started": "Requesting the next test from the model", "model_completed": "Model response received",
+            "model_error": "Model call failed", "model_interrupted": "Model call interrupted",
+            "decision": "Model selected its next action", "tool_started": "Sending an allowed HTTP request",
+            "tool_finished": "HTTP request and evidence processing finished", "cancel_requested": "Cancellation requested",
+            "cancellation_processed": "Local execution cancelled; provider billing may continue",
+            "recovered_as_failed": "Interrupted execution marked failed after restart",
+        }
+        if agent:
+            phase = {"agent_started": "planning", "model_started": "thinking", "model_completed": "planning",
+                     "tool_started": "testing", "tool_finished": "evaluating", "agent_finished": agent.status,
+                     "cancellation_processed": agent.status}.get(kind)
+            if phase:
+                agent.phase = phase
+            agent.progress = sum(c.progress == "completed" for c in agent.checks) / len(agent.checks) if agent.checks else 0
         execution.events.append({"sequence": len(execution.events) + 1, "timestamp": now(),
-                                 "agent_run_id": agent.id if agent else None, "type": kind, **data})
+                                 "agent_run_id": agent.id if agent else None, "type": kind,
+                                 "message": messages.get(kind, kind.replace("_", " ")),
+                                 "level": "error" if data.get("error") or kind in {"model_error", "recovered_as_failed"} else "warn" if "cancel" in kind or "interrupted" in kind else "info", **data})
         self.store.save(execution)
 
     def recover(self):
@@ -41,6 +63,7 @@ class Manager:
             for agent in execution.agents:
                 if agent.status in {"pending", "running"}:
                     agent.status, agent.error, agent.termination_reason = "failed", "server_restart", "server_restart"
+                    agent.phase = "failed"
                     agent.ended_at = execution.ended_at
                     if agent.started_at:
                         agent.duration = (datetime.fromisoformat(agent.ended_at) - datetime.fromisoformat(agent.started_at)).total_seconds()
@@ -58,6 +81,13 @@ class Manager:
     def create(self, config: ExecutionRequest):
         if self.stopping or self.active:
             raise RuntimeError("Only one execution at a time is supported")
+        target = self.targets.get(config.target_id) if config.target_id else None
+        if config.target_id and target is None:
+            raise ValueError("Target is not registered by the backend operator")
+        if target:
+            import os
+            if any(not os.getenv(name) for login in target.accounts.values() for name in login.fields_env.values()):
+                raise ValueError("Missing target credential environment variable")
         for agent in config.agents:
             spec = self.models.get(agent.model)
             if spec is None or spec.mode != config.mode:
@@ -71,10 +101,19 @@ class Manager:
         execution_id = uuid4().hex
         execution = Execution(id=execution_id, config=config, created_at=now(), agents=[
             AgentResult(id=uuid4().hex, execution_id=execution_id, model=a.model, role=a.role,
+                        model_name=self.models[a.model].name or a.model,
                         prompt_version=a.prompt_version, instructions=a.instructions,
                         environment_version=config.environment + "-v1")
             for a in config.agents
         ])
+        metadata = next(s for s in scenarios(self.targets) if s["id"] == config.scenario)
+        execution.scenario_name = metadata["name"]
+        execution.allowed_paths = list(target.allowed_paths if target else metadata["allowed_paths"])
+        if target:
+            for agent in execution.agents:
+                agent.scenario_version, agent.environment_version = "web-access-v1", config.target_id
+                agent.checks = [CheckResult(id=f"web_access:{account}:{r.path}")
+                                for r in target.resources for account in (r.owner, "B" if r.owner == "A" else "A", "anonymous")]
         self.store.save(execution)
         self.active[execution.id] = execution
         self.tasks[execution.id] = asyncio.create_task(self.run(execution))
@@ -137,19 +176,29 @@ class Manager:
     async def agent_loop(self, execution, agent):
         start = time.monotonic()
         agent.status, agent.started_at = "running", now()
-        gateway = ToolGateway(create_fixture(execution.config.environment))
+        target = self.targets.get(execution.config.target_id)
+        gateway = WebGateway(target) if target else ToolGateway(create_fixture(execution.config.environment))
         observations = []
         self.event(execution, agent, "agent_started")
         try:
             async with asyncio.timeout(execution.config.budget.seconds):
                 while True:
                     messages = [
-                        {"role": "system", "content": SYSTEM_V1.format(role=agent.role, schema=json.dumps(Decision.model_json_schema()))},
+                        {"role": "system", "content": (WEB_SYSTEM_V1 if target else SYSTEM_V1).format(role=agent.role, schema=json.dumps(Decision.model_json_schema()))},
                         {"role": "user", "content": json.dumps({"observations": observations,
                          "instructions": agent.instructions,
                          "prior_claims": agent.claims, "requests_remaining": execution.config.budget.requests - agent.requests})}
                     ]
+                    if target:
+                        context = json.loads(messages[-1]["content"])
+                        context["target"] = {"allowed_paths": target.allowed_paths,
+                                             "resources": [{"path": r.path, "owner": r.owner} for r in target.resources]}
+                        messages[-1]["content"] = json.dumps(context)
+                    first_call = len(agent.model_attempts)
+                    decision_start = time.monotonic()
                     decision = await self.model_call(execution, agent, messages)
+                    decision_duration = time.monotonic() - decision_start
+                    calls = agent.model_attempts[first_call:]
                     agent.claims.append({"timestamp": now(), **decision.model_dump()})
                     self.event(execution, agent, "decision", action=decision.action)
                     if decision.action == "stop":
@@ -159,8 +208,10 @@ class Manager:
                         raise BudgetExhausted("requests")
                     agent.requests += 1
                     attempt = TestAttempt(id=uuid4().hex, execution_id=execution.id, agent_run_id=agent.id,
-                                          hypothesis=decision.hypothesis, method="http_order_access",
-                                          request=decision.request, started_at=now())
+                                          hypothesis=decision.hypothesis, method="web_access" if target else "http_order_access",
+                                          request=decision.request, started_at=now(), model_duration=decision_duration,
+                                          token_usage=sum(c["input_tokens"] + c["output_tokens"] for c in calls) if all(c["input_tokens"] is not None and c["output_tokens"] is not None for c in calls) else None,
+                                          estimated_cost=sum(c["estimated_cost"] for c in calls) if all(c["estimated_cost"] is not None for c in calls) else None)
                     agent.attempts.append(attempt)
                     self.event(execution, agent, "tool_started", attempt_id=attempt.id)
                     attempt_start = time.monotonic()
@@ -175,7 +226,8 @@ class Manager:
                         self.store.save(execution)
                         # Only raw observations return to this agent, never oracle judgments or peer state.
                         observations.append(observation)
-                        apply_evaluation(agent, attempt, self.evaluator(attempt, observation))
+                        evaluation = evaluate_web(target, attempt, observation, observations[:-1]) if target else self.evaluator(attempt, observation)
+                        apply_evaluation(agent, attempt, evaluation)
                     except BaseException as error:
                         attempt.error = type(error).__name__
                         raise
@@ -232,6 +284,7 @@ class Manager:
             execution.status, execution.error, execution.ended_at = status, reason, now()
             for agent in execution.agents:
                 agent.status, agent.termination_reason, agent.ended_at = status, reason, now()
+                agent.phase = status
             self.store.save(execution)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

@@ -28,6 +28,10 @@ class Store:
         return [e for (doc,) in self.db.execute("SELECT document FROM executions")
                 if (e := Execution.model_validate_json(doc)).status in {"pending", "running"}]
 
+    def list(self, limit=20, offset=0):
+        rows = self.db.execute("SELECT document FROM executions ORDER BY json_extract(document, '$.created_at') DESC, id DESC LIMIT ? OFFSET ?", (limit, offset))
+        return [Execution.model_validate_json(doc) for (doc,) in rows]
+
     def artifact(self, execution_id: str, agent_id: str, evidence_id: str, payload: dict):
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         relative = Path(execution_id) / agent_id / f"{evidence_id}.json"

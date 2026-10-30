@@ -1,0 +1,538 @@
+diff --git a/src/App.tsx b/src/App.tsx
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -1,12 +1,13 @@
+ import { useEffect, useState } from 'react'
+ import { api, isMock } from './api/index.ts'
++import { Tag } from './components/StatusBadge.tsx'
+ import Icon from './components/Icon.tsx'
+-import { Tag } from './components/StatusBadge.tsx'
+ import GuidePage from './pages/GuidePage.tsx'
+ import MonitorPage from './pages/MonitorPage.tsx'
+ import RecentRunsPage from './pages/RecentRunsPage.tsx'
+ import ReportPage from './pages/ReportPage.tsx'
+ import SettingsPage from './pages/SettingsPage.tsx'
++import ApiConnection from './components/ApiConnection.tsx'
+ import { usePoll } from './usePoll.ts'
+ 
+ // 해시 라우팅: Vercel 정적 배포에서 rewrite 설정 없이 새로고침이 동작한다.
+@@ -26,25 +27,24 @@
+   const id = match?.[1]
+   const { data: health, error: healthError } = usePoll(api.fetchHealth, [], () => false, 10_000)
+ 
+-  const nav = (icon: Parameters<typeof Icon>[0]['name'], href: string, label: string, active: boolean) => (
+-    <a className={active ? 'nav active' : 'nav'} href={href} aria-current={active ? 'page' : undefined}>
+-      <Icon name={icon} />{label}
+-    </a>
++  const nav = (href: string, label: string, active: boolean, icon: 'grid' | 'settings' | 'book' | 'chart' | 'file') => (
++    <a className={active ? 'nav active' : 'nav'} href={href} aria-current={active ? 'page' : undefined}><Icon name={icon} />{label}{active && <span className="nav-indicator" />}</a>
+   )
+ 
+   return (
+     <div className="shell">
+       <aside className="sidebar">
+         <a className="brand" href="#/">
+-          <span className="brandmark">A</span>
+-          <span>Adaptive<small>Red Team Lab</small></span>
++          <span className="brandmark"><Icon name="shield" /></span>
++          <span>Adaptive<small>RED TEAM LAB</small></span>
+         </a>
+-        <div className="navlabel">메뉴</div>
+-        {nav('home', '#/', '대시보드', route === '/')}
+-        {nav('play', '#/new', '실행 설정', route === '/new')}
+-        {id && nav('pulse', `#/executions/${id}`, '실행 모니터', !match?.[2])}
+-        {id && nav('report', `#/executions/${id}/report`, '결과 보고서', Boolean(match?.[2]))}
+-        {nav('book', '#/guide', '사용 안내', route === '/guide')}
++        <div className="navlabel">WORKSPACE</div>
++        {nav('#/', '대시보드', route === '/', 'grid')}
++        {nav('#/new', '실행 설정', route === '/new', 'settings')}
++        {id && nav(`#/executions/${id}`, '실행 모니터', !match?.[2], 'chart')}
++        {id && nav(`#/executions/${id}/report`, '결과 보고서', Boolean(match?.[2]), 'file')}
++        {nav('#/guide', '사용 안내', route === '/guide', 'book')}
++        <div className="sidebar-note"><span className="eyebrow">SAFE BY DESIGN</span><p>더 안전한 서비스를 위한<br />AI 보안 워크스페이스</p><a href="#/guide">시작 가이드 <Icon name="arrow" /></a></div>
+         <div className="sidebottom">
+           <span className={healthError ? 'dot down' : 'dot'} />
+           {isMock ? '시연 환경' : healthError ? '백엔드 연결 실패' : health ? '백엔드 연결됨' : '연결 확인 중'}
+@@ -53,16 +53,17 @@
+       </aside>
+       <div className="main">
+         <header className="topbar">
+-          <Tag label={isMock ? '시연 데이터' : 'LIVE API'} tone={isMock ? '' : 'green'} />
+-          <span className="team"><span className="avatar">SR</span>Super Red Team</span>
++          <div className="breadcrumb">워크스페이스 <span>/</span><span className="crumb">Super Red Team</span></div>
++          <div className="workspace-meta"><Tag label={isMock ? '시연 데이터' : '백엔드 연동'} tone={isMock ? '' : 'green'} /><span className="workspace-avatar"><Icon name="shield" /></span><span className="workspace-name">Red Team Lab<small>Security workspace</small></span></div>
+         </header>
+         <main className="content">
++          {!isMock && <ApiConnection />}
+           {route === '/guide' ? <GuidePage />
+             : route === '/new' ? <SettingsPage />
+             : id && match?.[2] ? <ReportPage key={id} id={id} />
+             : id ? <MonitorPage key={id} id={id} />
+             : route === '/' ? <RecentRunsPage />
+-            : <p className="notice">페이지를 찾을 수 없습니다. <a className="link" href="#/">대시보드로</a></p>}
++            : <p className="notice">페이지를 찾을 수 없습니다. <a className="link" href="#/">실행 기록으로</a></p>}
+         </main>
+       </div>
+     </div>
+diff --git a/src/api/connection.ts b/src/api/connection.ts
+new file mode 100644
+--- /dev/null
++++ b/src/api/connection.ts
+@@ -0,0 +1,24 @@
++const KEYS = { base: 'red-team:backend-url', token: 'red-team:backend-token', mode: 'red-team:execution-mode' }
++
++function saved(key: string): string | null {
++  try { return sessionStorage.getItem(key) } catch { return null }
++}
++
++export function connection() {
++  return {
++    base: saved(KEYS.base) ?? import.meta.env.VITE_API_BASE_URL ?? '/api',
++    token: saved(KEYS.token) ?? '',
++    mode: saved(KEYS.mode) ?? import.meta.env.VITE_EXECUTION_MODE ?? 'mock',
++  }
++}
++
++export function saveConnection(base: string, token: string, mode: string) {
++  if (base !== '/api') {
++    const url = new URL(base)
++    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash)
++      throw new Error('백엔드 URL을 확인하세요.')
++  }
++  sessionStorage.setItem(KEYS.base, base.replace(/\/$/, ''))
++  sessionStorage.setItem(KEYS.token, token.trim())
++  sessionStorage.setItem(KEYS.mode, mode)
++}
+diff --git a/src/api/http.ts b/src/api/http.ts
+--- a/src/api/http.ts
++++ b/src/api/http.ts
+@@ -1,30 +1,105 @@
+ import { ApiError } from './types.ts'
+-import type { Execution, Health, LogEntry, Model, Report, Scenario, StartRunRequest, StartRunResponse } from './types.ts'
+-
+-const BASE = import.meta.env.VITE_API_BASE_URL ?? ''
++import type { Execution, Health, LogEntry, Model, Report, Scenario, StartRunRequest, StartRunResponse, RunStatus } from './types.ts'
++import { connection } from './connection.ts'
+ 
+ async function request<T>(path: string, init?: RequestInit): Promise<T> {
+-  let res: Response
+-  try {
+-    res = await fetch(BASE + path, init)
+-  } catch {
+-    throw new ApiError(0, `백엔드에 연결할 수 없습니다: ${path}`)
++  const { base, token } = connection()
++  const headers = new Headers(init?.headers)
++  if (token) headers.set('Authorization', `Bearer ${token}`)
++  let response: Response
++  try { response = await fetch(base.replace(/\/$/, '') + path, { ...init, headers }) }
++  catch { throw new ApiError(0, '백엔드에 연결할 수 없습니다. 연결 주소를 확인하세요.') }
++  if (!response.ok) {
++    const message = response.status === 401 ? '접근 토큰을 입력하거나 확인하세요.' : `API 오류 ${response.status}: ${path}`
++    throw new ApiError(response.status, message)
+   }
+-  if (!res.ok) throw new ApiError(res.status, `API 오류 ${res.status}: ${path}`)
+-  return res.json()
++  return response.json()
+ }
+ 
+-// TODO: 백엔드 완성 후 실제 서버로 응답 필드를 검증한다. 아직 호출해 본 적이 없다.
++interface BackendModel extends Model { mode: 'mock' | 'live'; configured: boolean }
++interface BackendScenario {
++  id: string; name: string; service: string; description: string; accounts: string[]
++  environments: string[]; environment_versions: Record<string, string>; allowed_paths: string[]
++  targets?: { id: string; allowed_paths: string[] }[]
++}
++interface BackendAgent {
++  id: string; model: string; model_name: string; role: string; prompt_version: string; status: RunStatus
++  phase: string; progress: number; token_usage: number | null; estimated_cost: number | null
++  duration: number | null; error: string | null
++}
++interface BackendExecution {
++  id: string; status: RunStatus; is_mock: boolean; scenario_name: string; created_at: string
++  ended_at: string | null; error: string | null; agents: BackendAgent[]
++  config: { scenario: string; environment: string; collaboration: 'independent' }
++}
++interface BackendEvent {
++  sequence: number; timestamp: string; agent_run_id: string | null
++  level: LogEntry['level']; message: string; type: string
++}
++
++function execution(value: BackendExecution): Execution {
++  return {
++    execution_id: value.id, status: value.status, is_mock: value.is_mock,
++    scenario_id: value.config.scenario, scenario_name: value.scenario_name,
++    environment: value.config.environment, collaboration_mode: value.config.collaboration,
++    created_at: value.created_at, finished_at: value.ended_at, error: value.error,
++    agents: value.agents.map((agent) => ({
++      agent_id: agent.id, model_id: agent.model, model_name: agent.model_name || agent.model,
++      role: agent.role, prompt_version: agent.prompt_version, status: agent.status,
++      phase: agent.phase, progress: agent.progress, tokens: agent.token_usage,
++      cost_usd: agent.estimated_cost, duration_ms: agent.duration === null ? null : agent.duration * 1000,
++      error: agent.error,
++    })),
++  }
++}
++
++const selectedScenarios = new Map<string, { scenario: string; environment: string; target_id?: string }>()
++const logs = new Map<string, { cursor: number; entries: LogEntry[] }>()
++
+ export const fetchHealth = () => request<Health>('/health')
+-export const fetchModels = () => request<Model[]>('/models')
+-export const fetchScenarios = () => request<Scenario[]>('/scenarios')
+-export const fetchStatus = (id: string) => request<Execution>(`/executions/${id}`)
+-export const fetchLogs = (id: string) => request<LogEntry[]>(`/executions/${id}/logs`)
+-export const fetchReport = (id: string) => request<Report>(`/executions/${id}/report`)
+-export const cancelRun = (id: string) => request<Execution>(`/executions/${id}/cancel`, { method: 'POST' })
+-export const startRun = (body: StartRunRequest) =>
+-  request<StartRunResponse>('/executions', {
+-    method: 'POST',
+-    headers: { 'Content-Type': 'application/json' },
+-    body: JSON.stringify(body),
++export const fetchModels = async (): Promise<Model[]> => (await request<BackendModel[]>('/models')).filter((m) => m.mode === connection().mode)
++export const fetchScenarios = async (): Promise<Scenario[]> => {
++  const result: Scenario[] = []
++  selectedScenarios.clear()
++  for (const scenario of await request<BackendScenario[]>('/scenarios')) {
++    const targets = scenario.id === 'web-access-v1' ? scenario.targets ?? [] : [undefined]
++    for (const target of targets) for (const environment of scenario.environments) {
++      const id = `${scenario.id}:${environment}${target ? ':' + target.id : ''}`
++      selectedScenarios.set(id, { scenario: scenario.id, environment, ...(target ? { target_id: target.id } : {}) })
++      result.push({ id, name: scenario.name + (target ? ' · ' + target.id : ''), service: scenario.service,
++        environment, version: scenario.environment_versions[environment], description: scenario.description,
++        actors: scenario.accounts, allowed_paths: target?.allowed_paths ?? scenario.allowed_paths })
++    }
++  }
++  return result
++}
++export const fetchStatus = async (id: string) => execution(await request<BackendExecution>(`/executions/${encodeURIComponent(id)}`))
++export const fetchExecutions = async (): Promise<Execution[]> =>
++  (await request<{ executions: BackendExecution[] }>('/executions?limit=100')).executions.map(execution)
++export const fetchLogs = async (id: string): Promise<LogEntry[]> => {
++  const page = logs.get(id) ?? { cursor: 0, entries: [] }
++  let count: number
++  do {
++    const result = await request<{ events: BackendEvent[]; next_after: number }>(`/executions/${encodeURIComponent(id)}/logs?after=${page.cursor}&limit=500`)
++    count = result.events.length
++    if (result.next_after <= page.cursor) break
++    page.entries.push(...result.events.map((event) => ({ id: String(event.sequence), timestamp: event.timestamp,
++      agent_id: event.agent_run_id, level: event.level ?? 'info', message: event.message ?? event.type })))
++    page.cursor = result.next_after
++  } while (count === 500)
++  logs.set(id, page)
++  return [...page.entries]
++}
++export const fetchReport = (id: string) => request<Report>(`/executions/${encodeURIComponent(id)}/report`)
++export const cancelRun = async (id: string) => execution(await request<BackendExecution>(`/executions/${encodeURIComponent(id)}/cancel`, { method: 'POST' }))
++export const startRun = async (body: StartRunRequest) => {
++  if (!selectedScenarios.has(body.scenario_id)) await fetchScenarios()
++  const scope = selectedScenarios.get(body.scenario_id)
++  if (!scope) throw new ApiError(422, '등록된 시나리오를 선택하세요.')
++  return request<StartRunResponse>('/executions', {
++    method: 'POST', headers: { 'Content-Type': 'application/json' },
++    body: JSON.stringify({ ...scope, mode: connection().mode, collaboration: body.collaboration_mode,
++      agents: body.agents.map((a) => ({ model: a.model_id, role: a.role, prompt_version: a.prompt_version })),
++      budget: { seconds: 180, tokens: 300000, max_output_tokens: 4000 } }),
+   })
++}
+diff --git a/src/components/ApiConnection.tsx b/src/components/ApiConnection.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/components/ApiConnection.tsx
+@@ -0,0 +1,24 @@
++import { useState } from 'react'
++import { connection, saveConnection } from '../api/connection.ts'
++
++export default function ApiConnection() {
++  const [values, setValues] = useState(connection)
++  const [error, setError] = useState('')
++  return <details className="card pad" style={{ marginBottom: 20 }}>
++    <summary>백엔드 연결 설정</summary>
++    <form onSubmit={(event) => {
++      event.preventDefault()
++      try { saveConnection(values.base, values.token, values.mode); location.reload() }
++      catch (err) { setError(err instanceof Error ? err.message : '연결 설정을 저장할 수 없습니다.') }
++    }}>
++      <label className="field">백엔드 주소<input value={values.base} required onChange={(e) => setValues({ ...values, base: e.target.value })} /></label>
++      <label className="field">접근 토큰<input type="password" autoComplete="off" value={values.token} onChange={(e) => setValues({ ...values, token: e.target.value })} /></label>
++      <label className="field">실행 방식<select value={values.mode} onChange={(e) => setValues({ ...values, mode: e.target.value })}>
++        <option value="mock">고정 순서 점검 · 모델 호출 없음</option><option value="live">실제 AI 점검 · API 사용량 발생</option>
++      </select></label>
++      <p className="muted tiny">접근 토큰은 이 탭의 세션에만 저장됩니다. 모델 API 키를 입력하지 마세요.</p>
++      {error && <p role="alert" className="notice error">{error}</p>}
++      <button className="primary">저장하고 연결</button>
++    </form>
++  </details>
++}
+diff --git a/src/components/StatusBadge.tsx b/src/components/StatusBadge.tsx
+--- a/src/components/StatusBadge.tsx
++++ b/src/components/StatusBadge.tsx
+@@ -14,5 +14,5 @@
+ // 시연 데이터는 상단 표시가 모든 화면에서 알려 준다. 서버가 is_mock을 주지 않으면 실제로 단정하지 않는다.
+ export function SourceBadge({ isMock }: { isMock?: boolean }) {
+   if (isMock === undefined) return <Tag label="출처 미확인" tone="orange" />
+-  return isMock ? null : <Tag label="실측 결과" tone="green" />
++  return isMock ? <Tag label="고정 순서 점검" /> : <Tag label="실제 모델 실행" tone="green" />
+ }
+diff --git a/src/mocks/mockApi.ts b/src/mocks/mockApi.ts
+--- a/src/mocks/mockApi.ts
++++ b/src/mocks/mockApi.ts
+@@ -349,6 +349,7 @@
+ export async function fetchModels() { await delay(); return MODELS }
+ export async function fetchScenarios() { await delay(); return SCENARIOS }
+ export async function fetchStatus(id: string) { await delay(); return snapshot(findRun(id), Date.now()) }
++export async function fetchExecutions() { await delay(); return runs.map((run) => snapshot(run, Date.now())) }
+ export async function fetchLogs(id: string) { await delay(); return logsOf(findRun(id), Date.now()) }
+ export async function fetchReport(id: string) { await delay(); return reportOf(findRun(id), Date.now()) }
+ 
+diff --git a/src/pages/RecentRunsPage.tsx b/src/pages/RecentRunsPage.tsx
+--- a/src/pages/RecentRunsPage.tsx
++++ b/src/pages/RecentRunsPage.tsx
+@@ -1,31 +1,17 @@
+ import { api, demoExecutionIds, isMock } from '../api/index.ts'
+ import { ApiError } from '../api/types.ts'
+-import type { Execution, Report } from '../api/types.ts'
+-import Icon from '../components/Icon.tsx'
+-import ScoreBars from '../components/ScoreBars.tsx'
++import type { Execution } from '../api/types.ts'
+ import { RunBadge, SourceBadge } from '../components/StatusBadge.tsx'
+-import { dateTime, isActive } from '../format.ts'
++import { dateTime } from '../format.ts'
+ import { forgetRun, loadRecentRuns } from '../recentRuns.ts'
+ import { usePoll } from '../usePoll.ts'
++import Icon from '../components/Icon.tsx'
+ 
+-const cleanRun = (e: Execution | null) => e?.status === 'completed' && e.agents.every((a) => a.status === 'completed')
+-const troubled = (e: Execution | null) => e?.status === 'failed' || e?.agents.some((a) => a.status === 'failed')
+-
+-// 수정 환경처럼 전부 0점인 실행은 건너뛰고, 점수가 있는 가장 최근 보고서를 고른다.
+-async function latestScoredReport(ids: string[]) {
+-  let fallback: Report | null = null
+-  for (const id of ids) {
+-    const report = await api.fetchReport(id).catch(() => null)
+-    if (report?.combinations.some((c) => c.score)) return report
+-    fallback ??= report
+-  }
+-  return fallback
+-}
+-
+-async function loadDashboard() {
++async function loadRuns() {
++  if (!isMock) return (await api.fetchExecutions()).map((execution) => ({ id: execution.execution_id, execution }))
+   const ids = [...new Set([...loadRecentRuns(), ...demoExecutionIds])]
+   const results = await Promise.allSettled(ids.map((id) => api.fetchStatus(id)))
+-  const runs = results.flatMap((result, i): { id: string; execution: Execution | null }[] => {
++  return results.flatMap((result, i): { id: string; execution: Execution | null }[] => {
+     if (result.status === 'fulfilled') return [{ id: ids[i], execution: result.value }]
+     // 서버에 없는 ID는 지우고, 그 외 오류는 조회 실패로 남긴다.
+     if (result.reason instanceof ApiError && result.reason.status === 404) {
+@@ -34,98 +20,74 @@
+     }
+     return [{ id: ids[i], execution: null }]
+   })
+-  return { runs, report: await latestScoredReport(runs.filter((r) => cleanRun(r.execution)).map((r) => r.id)) }
+ }
+ 
+ export default function RecentRunsPage() {
+-  const { data, error } = usePoll(loadDashboard, [])
+-  const runs = data?.runs ?? []
+-  const executions = runs.map((r) => r.execution)
+-  const kpis = [
+-    { icon: 'layers', label: '전체 실행', value: runs.length, hint: '이 브라우저 기준' },
+-    { icon: 'pulse', label: '실행 중', value: executions.filter((e) => e && isActive(e.status)).length, hint: '실시간 갱신' },
+-    { icon: 'check', label: '정상 완료', value: executions.filter(cleanRun).length, hint: '모든 AI 완주' },
+-    { icon: 'alert', label: '확인 필요', value: executions.filter(troubled).length, hint: '실패 또는 일부 실패' },
+-  ] as const
++  const { data, error } = usePoll(loadRuns, [])
++  const executions = data?.flatMap(({ execution }) => execution ? [execution] : []) ?? []
++  const completed = executions.filter((run) => run.status === 'completed').length
++  const running = executions.filter((run) => run.status === 'running' || run.status === 'pending').length
++  const failed = executions.filter((run) => run.status === 'failed' || run.status === 'cancelled').length
+ 
+   return (
+     <>
+       <div className="heading">
+         <div>
+-          <h1>대시보드</h1>
+-          <p className="subtitle">AI 보안 점검 현황을 한눈에 확인하세요.</p>
++          <p className="eyebrow page-eyebrow">SECURITY OVERVIEW</p>
++          <h1>보안 점검 대시보드</h1>
++          <p className="subtitle">보안 점검의 모든 흐름을 한눈에 확인하세요.</p>
+         </div>
++        <a className="button primary" href="#/new"><span aria-hidden="true">＋</span> 새 점검 시작</a>
+       </div>
+       {error && <p className="notice error" role="alert">{error}</p>}
+       {!data && !error && <p className="notice">불러오는 중…</p>}
+-
+-      {data && (
+-        <>
+-          <div className="kpis">
+-            {kpis.map((kpi) => (
+-              <article className="card kpi" key={kpi.label}>
+-                <span className="kpi-icon"><Icon name={kpi.icon} /></span>
+-                <div>
+-                  <small>{kpi.label}</small>
+-                  <strong>{kpi.value}</strong>
+-                  <span>{kpi.hint}</span>
+-                </div>
+-              </article>
+-            ))}
+-          </div>
+-
+-          <div className="home-grid">
+-            <section className="card pad">
+-              <div className="sectionhead">
+-                <div>
+-                  <h2>최신 조합 점수</h2>
+-                  {data.report && <p className="subtitle">{data.report.settings.scenario_name} · {data.report.settings.environment}</p>}
+-                </div>
+-                {data.report && <a className="link" href={`#/executions/${data.report.execution_id}/report`}>보고서 보기</a>}
+-              </div>
+-              {data.report
+-                ? <ScoreBars combinations={data.report.combinations} />
+-                : <p className="notice">완료된 실행이 있으면 점수가 표시됩니다.</p>}
+-            </section>
+-
+-            <section className="promo">
+-              <span className="tag">독립 실행</span>
+-              <h2>새 보안 점검을 시작하세요</h2>
+-              <p>AI 3개가 서로의 답을 보지 않고 같은 환경을 점검합니다.</p>
+-              <a className="button" href="#/new">점검 시작</a>
+-            </section>
+-          </div>
+-
+-          <section className="card">
+-            <div className="panelhead"><h2>최근 실행</h2></div>
+-            {runs.length === 0 ? <p className="notice">아직 실행이 없습니다.</p> : (
+-              <div className="tablewrap">
+-                <table>
+-                  <thead>
+-                    <tr><th>실행</th><th>시나리오</th><th>환경</th><th>모델</th><th>상태</th>{!isMock && <th>출처</th>}<th>시작</th></tr>
+-                  </thead>
+-                  <tbody>
+-                    {runs.map(({ id, execution }) => (
+-                      <tr key={id}>
+-                        <td className="mono"><a className="link" href={`#/executions/${id}`}>{id}</a></td>
+-                        {execution ? (
+-                          <>
+-                            <td>{execution.scenario_name}</td>
+-                            <td>{execution.environment}</td>
+-                            <td>{execution.agents.map((a) => a.model_name).join(', ')}</td>
+-                            <td><RunBadge status={execution.status} agents={execution.agents} /></td>
+-                            {!isMock && <td><SourceBadge isMock={execution.is_mock} /></td>}
+-                            <td>{dateTime(execution.created_at)}</td>
+-                          </>
+-                        ) : <td colSpan={5} className="muted">상태 조회 실패</td>}
+-                      </tr>
+-                    ))}
+-                  </tbody>
+-                </table>
+-              </div>
+-            )}
++      {data?.length === 0 && <p className="notice">아직 실행이 없습니다.</p>}
++      {data && <>
++        <div className="overview-stats card">
++          <div className="overview-stat"><span className="stat-icon blue"><Icon name="grid" /></span><div><span>전체 실행</span><strong>{data.length}<small>건</small></strong></div></div>
++          <div className="overview-stat"><span className="stat-icon green"><Icon name="shield" /></span><div><span>점검 완료</span><strong>{completed}<small>건</small></strong></div></div>
++          <div className="overview-stat"><span className="stat-icon purple"><Icon name="chart" /></span><div><span>진행 중</span><strong>{running}<small>건</small></strong></div></div>
++          <div className="overview-stat"><span className="stat-icon orange"><Icon name="file" /></span><div><span>실패 · 취소</span><strong>{failed}<small>건</small></strong></div></div>
++        </div>
++        <div className="overview-grid">
++          <section className="card progress-card">
++            <div className="sectionhead"><div><h2>실행별 진행 현황</h2><p className="muted tiny">최근 실행의 AI 에이전트 진행률</p></div><span className="chart-key"><i /> 평균 진행률</span></div>
++            {executions.length ? <div className="run-chart">{executions.slice(0, 8).map((run) => {
++              const progress = run.agents.length && run.agents.every((agent) => agent.progress !== null)
++                ? Math.round(run.agents.reduce((sum, agent) => sum + (agent.progress ?? 0), 0) / run.agents.length * 100) : null
++              return <a className={`chart-column ${run.status === 'running' ? 'current' : ''}`} href={`#/executions/${run.execution_id}`} key={run.execution_id} aria-label={`${run.execution_id}: ${progress === null ? '진행률 미제공' : `${progress}%`}`}><span className="bar-track"><span className="bar-fill" style={{ height: `${Math.max(0, Math.min(100, progress ?? 0))}%` }} /><b>{progress === null ? '—' : `${progress}%`}</b></span><span className="bar-label">{run.execution_id}</span></a>
++            })}</div> : <p className="chart-empty muted">새 점검을 시작하면 진행 현황이 표시됩니다.</p>}
++            <p className="chart-footnote">{isMock ? '이 브라우저에 저장된 실행 기준' : '서버에 저장된 최근 실행 100건 기준'} · 상태 조회 실패 {data.length - executions.length}건</p>
+           </section>
+-        </>
++          <section className="start-card"><span className="hero-chip">AI RED TEAMING</span><h2>더 깊이 점검하고,<br />더 안전하게 만드세요.</h2><p>세 가지 AI 모델이 독립적으로 탐색하고<br />보안 취약점을 비교·검증합니다.</p><a className="button" href="#/new">새 보안 점검 시작 <Icon name="arrow" /></a></section>
++        </div>
++      </>}
++      {data && data.length > 0 && (
++        <div className="card tablewrap">
++          <div className="panelhead"><div><h2>최근 실행 기록</h2><p className="muted tiny">실행을 선택해 상세 진행 상황을 확인하세요.</p></div><span className="record-count">{data.length}개 실행</span></div>
++          <table>
++            <thead>
++              <tr><th>실행</th><th>시나리오</th><th>환경</th><th>모델</th><th>상태</th>{!isMock && <th>출처</th>}<th>시작</th></tr>
++            </thead>
++            <tbody>
++              {data.map(({ id, execution }) => (
++                <tr key={id}>
++                  <td className="mono"><a className="link" href={`#/executions/${id}`}>{id}</a></td>
++                  {execution ? (
++                    <>
++                      <td>{execution.scenario_name}</td>
++                      <td>{execution.environment}</td>
++                      <td>{execution.agents.map((a) => a.model_name).join(', ')}</td>
++                      <td><RunBadge status={execution.status} agents={execution.agents} /></td>
++                      {!isMock && <td><SourceBadge isMock={execution.is_mock} /></td>}
++                      <td>{dateTime(execution.created_at)}</td>
++                    </>
++                  ) : <td colSpan={6} className="muted">상태 조회 실패</td>}
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div>
+       )}
+     </>
+   )
+diff --git a/src/pages/ReportPage.tsx b/src/pages/ReportPage.tsx
+--- a/src/pages/ReportPage.tsx
++++ b/src/pages/ReportPage.tsx
+@@ -67,7 +67,7 @@
+ 
+       {report.partial && (
+         <p className="notice warn" role="alert">
+-          일부 AI가 끝까지 실행되지 않아 결과가 일부만 포함되어 있습니다.
++          점검이 완료되지 않았거나 판정이 보류된 항목이 있습니다. 상세 기록과 점검 항목을 확인하세요.
+         </p>
+       )}
+ 
+diff --git a/src/pages/SettingsPage.tsx b/src/pages/SettingsPage.tsx
+--- a/src/pages/SettingsPage.tsx
++++ b/src/pages/SettingsPage.tsx
+@@ -10,7 +10,7 @@
+ const AGENT_COUNT = 3
+ // TODO: 역할·프롬프트 버전 목록을 제공할 API가 계약에 없다. 백엔드와 값 확정 필요.
+ const ROLES = ['범용 탐색·검증', '접근 제어 특화']
+-const PROMPT_VERSIONS = ['independent-v1', 'checklist-v1']
++const PROMPT_VERSIONS = ['v1']
+ 
+ const PLANNED = ['Black-box', 'White-box', '브라우저 도구', '코드 읽기 도구', '예약 실행']
+ 
+diff --git a/vite.config.ts b/vite.config.ts
+--- a/vite.config.ts
++++ b/vite.config.ts
+@@ -1,4 +1,14 @@
+ import react from '@vitejs/plugin-react'
+-import { defineConfig } from 'vite'
++import { defineConfig, loadEnv } from 'vite'
+ 
+-export default defineConfig({ plugins: [react()] })
++export default defineConfig(({ mode }) => {
++  const env = loadEnv(mode, process.cwd(), '')
++  return {
++    plugins: [react()],
++    server: { proxy: { '/api': {
++      target: env.BACKEND_PROXY_URL || 'http://127.0.0.1:8000', changeOrigin: true,
++      headers: env.BACKEND_PROXY_TOKEN ? { Authorization: `Bearer ${env.BACKEND_PROXY_TOKEN}` } : {},
++      rewrite: (path: string) => path.replace(/^\/api/, ''),
++    } } },
++  }
++})
+diff --git a/.env.example b/.env.example
+--- a/.env.example
++++ b/.env.example
+@@ -1,3 +1,7 @@
+-# 기본값은 목 모드. 백엔드가 준비되면 Vercel 환경 변수에 아래 두 값을 설정하고 재배포한다.
++# Real backend adapter; the API execution mode is selected separately.
+ VITE_USE_MOCK=false
+-VITE_API_BASE_URL=https://api.example.com
++VITE_API_BASE_URL=/api
++VITE_EXECUTION_MODE=mock
++# Local development proxy only. Never prefix this token with VITE_.
++BACKEND_PROXY_URL=http://127.0.0.1:8000
++BACKEND_PROXY_TOKEN=

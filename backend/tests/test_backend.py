@@ -17,6 +17,12 @@ from app.providers import LiteLLMProvider, MockProvider, Reply, registry
 from app.store import Store
 
 
+@pytest.fixture(autouse=True)
+def legacy_model_defaults(monkeypatch):
+    monkeypatch.setenv("MODEL_A", "openai/gpt-4o-mini")
+    monkeypatch.setenv("MODEL_B", "anthropic/claude-haiku-4-5")
+
+
 @asynccontextmanager
 async def client_for(path, **kwargs):
     app = create_app(path, **kwargs)
@@ -26,7 +32,8 @@ async def client_for(path, **kwargs):
 
 
 async def launch(client, payload=None):
-    response = await client.post("/executions", json=payload or {})
+    payload = {"agents": [{"model": "mock/explorer-a"}, {"model": "mock/explorer-b"}], **(payload or {})}
+    response = await client.post("/executions", json=payload)
     assert response.status_code == 202, response.text
     return response.json()["execution_id"]
 
@@ -45,7 +52,7 @@ def test_end_to_end(tmp_path, version, vulnerabilities):
     async def run():
         async with client_for(tmp_path) as (client, app):
             assert (await client.get("/health")).status_code == 200
-            assert len((await client.get("/models")).json()) == 4
+            assert len((await client.get("/models")).json()) == 6
             assert (await client.get("/scenarios")).json()[0]["id"] == "orders-v1"
             execution_id = await launch(client, {"environment": version})
             result = await done(client, execution_id)
@@ -300,7 +307,8 @@ def test_shutdown_marks_failed(tmp_path):
 
 
 @pytest.mark.parametrize("model,key", [("openai/gpt-4o-mini", "OPENAI_API_KEY"),
-                                      ("anthropic/claude-haiku-4-5", "ANTHROPIC_API_KEY")])
+                                      ("anthropic/claude-haiku-4-5", "ANTHROPIC_API_KEY"),
+                                      ("gemini/gemini-3.6-flash", "GEMINI_API_KEY")])
 def test_litellm_adapter_without_network(monkeypatch, model, key):
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     import litellm
@@ -311,12 +319,26 @@ def test_litellm_adapter_without_network(monkeypatch, model, key):
                                usage=SimpleNamespace(prompt_tokens=11, completion_tokens=5))
     monkeypatch.setattr(litellm, "acompletion", fake)
     monkeypatch.setenv(key, "private-test-key")
+    monkeypatch.setenv("MODEL_A", model)
     spec = registry()[model]
     reply = asyncio.run(LiteLLMProvider().complete(spec, [{"role": "user", "content": "JSON"}], 100, 2))
     assert reply.input_tokens == 11 and reply.output_tokens == 5
     assert seen["api_key"] == "private-test-key"
     assert seen["num_retries"] == seen["max_retries"] == 0
     assert seen["timeout"] == 2
+
+
+def test_gemini_registry(monkeypatch):
+    monkeypatch.setenv("MODEL_A", "gemini/gemini-3.6-flash")
+    monkeypatch.setenv("MODEL_B", "gemini/gemini-3.5-flash-lite")
+    monkeypatch.setenv("MODEL_A_INPUT_USD_PER_MILLION", "")
+    models = registry()
+    assert models["gemini/gemini-3.6-flash"].key_env == "GEMINI_API_KEY"
+    assert models["gemini/gemini-3.5-flash-lite"].key_env == "GEMINI_API_KEY"
+    assert models["gemini/gemini-3.6-flash"].input_rate is None
+    monkeypatch.setenv("MODEL_A", "unknown/model")
+    with pytest.raises(ValueError, match="Unsupported provider"):
+        registry()
 
 
 def test_runner_error_is_not_non_reproduction(tmp_path, monkeypatch):

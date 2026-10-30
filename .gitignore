@@ -5,3 +5,5 @@ __pycache__/
 *.egg-info/
 backend/data/
 .env
+backend/targets.local.json
+.integration/
