@@ -9,7 +9,7 @@ from .evaluator import apply_evaluation, evaluate
 from .fixture import create_fixture
 from .gateway import ToolGateway
 from .prompts import SYSTEM_V1, WEB_SYSTEM_V1
-from .targets import WebGateway, evaluate_web
+from .targets import WebGateway, evaluate_web, normalize_target_url
 from .providers import LiteLLMProvider, MockProvider, parse_decision, transient
 from .catalog import scenarios
 
@@ -81,10 +81,20 @@ class Manager:
     def create(self, config: ExecutionRequest):
         if self.stopping or self.active:
             raise RuntimeError("Only one execution at a time is supported")
+        if config.target_url is not None:
+            url = normalize_target_url(config.target_url)
+            target_id = next((key for key, target in self.targets.items()
+                              if url in {normalize_target_url(target.base_url), *target.urls}), None)
+            if target_id is None:
+                raise ValueError("Target URL is not registered by the backend operator")
+            if config.target_id is not None and config.target_id != target_id:
+                raise ValueError("target_id and target_url refer to different sites")
+            config = config.model_copy(update={"target_id": target_id, "target_url": url})
         target = self.targets.get(config.target_id) if config.target_id else None
         if config.target_id and target is None:
             raise ValueError("Target is not registered by the backend operator")
         if target:
+            config = config.model_copy(update={"environment": target.environment})
             import os
             if any(not os.getenv(name) for login in target.accounts.values() for name in login.fields_env.values()):
                 raise ValueError("Missing target credential environment variable")
@@ -107,7 +117,7 @@ class Manager:
             for a in config.agents
         ])
         metadata = next(s for s in scenarios(self.targets) if s["id"] == config.scenario)
-        execution.scenario_name = metadata["name"]
+        execution.scenario_name = metadata["name"] + (" · " + (target.name or config.target_id) if target else "")
         execution.allowed_paths = list(target.allowed_paths if target else metadata["allowed_paths"])
         if target:
             for agent in execution.agents:

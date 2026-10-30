@@ -125,6 +125,7 @@ def report(execution):
 
     scope = {'scenario': execution.config.scenario,
              'target': execution.config.target_id if web else 'registered in-process local orders fixture',
+             'target_url': execution.config.target_url,
              'environment_version': execution.config.target_id if web else execution.config.environment + '-v1',
              'state_changes': False,
              'isolation': 'Separate sessions; shared target data; login POST allowed' if web else 'separate ASGI application and data per agent; no runner network sockets'}
@@ -160,6 +161,7 @@ def report(execution):
         'result_kind': execution.config.mode + ('_models_with_registered_web_http' if web else '_simulation_with_local_http' if execution.config.mode == 'mock' else '_models_with_local_http'),
         'scope': scope, 'config': execution.config.model_dump(),
         'settings': {'scenario_name': execution.scenario_name or ('Registered website access control' if web else 'Order access control'),
+                     'target_url': execution.config.target_url,
                      'environment': execution.config.environment, 'version': scope['environment_version'],
                      'actors': ['A', 'B', 'anonymous'], 'allowed_paths': execution.allowed_paths or (['/orders/{numeric_id}'] if not web else []),
                      'info_level': execution.config.information, 'category': 'access-control', 'tools': execution.config.tools,

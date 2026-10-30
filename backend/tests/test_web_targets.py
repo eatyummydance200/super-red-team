@@ -10,7 +10,7 @@ import pytest
 
 from app.contracts import ExecutionRequest, ToolRequest
 from app.main import create_app
-from app.targets import WebGateway, WebTarget, evaluate_web
+from app.targets import WebGateway, WebTarget, evaluate_web, load_targets, normalize_target_url
 
 
 def target_config():
@@ -58,9 +58,12 @@ def credentials(monkeypatch):
 
 
 @pytest.mark.parametrize("vulnerable,findings", [(True, 2), (False, 0)])
-def test_web_execution(tmp_path, monkeypatch, vulnerable, findings):
+@pytest.mark.parametrize("selector", ["id", "public_url", "internal_url", "both"])
+def test_web_execution(tmp_path, monkeypatch, vulnerable, findings, selector):
     filename = tmp_path / "targets.json"
-    filename.write_text(json.dumps({"paper-cup": target_config()}))
+    config = {**target_config(), "name": "VM A", "urls": ["https://lab.example/lab/a/"],
+              "environment": "vulnerable" if vulnerable else "fixed"}
+    filename.write_text(json.dumps({"paper-cup": config}))
     monkeypatch.setenv("REDTEAM_TARGETS_FILE", str(filename))
     original_init = WebGateway.__init__
     calls = []
@@ -77,7 +80,13 @@ def test_web_execution(tmp_path, monkeypatch, vulnerable, findings):
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://backend") as client:
                 assert (await client.get("/scenarios")).json()[1]["target_ids"] == ["paper-cup"]
-                response = await client.post("/executions", json={"scenario": "web-access-v1", "target_id": "paper-cup", "agents": [{"model": "mock/explorer-a"}, {"model": "mock/explorer-b"}]})
+                metadata = (await client.get("/scenarios")).json()[1]
+                assert metadata["targets"][0]["url"] == "https://lab.example/lab/a"
+                assert metadata["targets"][0]["environment"] == config["environment"]
+                selection = {"target_id": "paper-cup"} if selector in {"id", "both"} else {}
+                if selector != "id":
+                    selection["target_url"] = config["base_url"] if selector == "internal_url" else "https://LAB.example:443/lab/a/"
+                response = await client.post("/executions", json={"scenario": "web-access-v1", **selection, "agents": [{"model": "mock/explorer-a"}, {"model": "mock/explorer-b"}]})
                 assert response.status_code == 202, response.text
                 execution_id = response.json()["execution_id"]
                 await app.state.manager.tasks[execution_id]
@@ -86,6 +95,9 @@ def test_web_execution(tmp_path, monkeypatch, vulnerable, findings):
                 assert report["unique_vulnerability_count"] == findings
                 assert report["comparison"]["complete"] is True
                 assert report["scope"]["target"] == "paper-cup"
+                assert report["config"]["environment"] == config["environment"]
+                expected_url = None if selector == "id" else normalize_target_url(selection["target_url"])
+                assert report["scope"]["target_url"] == report["settings"]["target_url"] == expected_url
                 assert all(len(a["attempts"]) == 6 for a in report["agents"])
                 assert "registered_web_http" in report["result_kind"]
                 serialized = json.dumps(report)
@@ -94,6 +106,14 @@ def test_web_execution(tmp_path, monkeypatch, vulnerable, findings):
                 for artifact in (tmp_path / "data").rglob("*.json"):
                     assert "secret-" not in artifact.read_text()
                 assert (await client.post("/executions", json={"scenario": "web-access-v1", "target_id": "missing"})).status_code == 422
+                count = len(calls)
+                for url in ["http://169.254.169.254/", "http://127.0.0.1:8080/", "https://lab.example/lab/ab",
+                            "https://lab.example/lab/a?next=http://outside.invalid", "https://lab.example/lab/a#fragment"]:
+                    denied = await client.post("/executions", json={"scenario": "web-access-v1", "target_url": url})
+                    assert denied.status_code == 422
+                denied = await client.post("/executions", json={"scenario": "web-access-v1", "target_id": "other", "target_url": config["urls"][0]})
+                assert denied.status_code == 422 and "different sites" in denied.json()["detail"]
+                assert len(calls) == count
         assert sum(r.method == "POST" for r in calls) == 4
     asyncio.run(run())
 
@@ -213,7 +233,29 @@ def test_target_contract():
         ExecutionRequest(scenario="web-access-v1")
     with pytest.raises(ValueError):
         ExecutionRequest(target_id="paper-cup")
+    with pytest.raises(ValueError):
+        ExecutionRequest(target_url="https://lab.example/lab/a")
+    assert ExecutionRequest(scenario="web-access-v1", target_url="https://lab.example/lab/a").target_id is None
     config = target_config()
     config["resources"][0]["path"] = "/outside"
     with pytest.raises(ValueError):
         WebTarget.model_validate(config)
+
+
+@pytest.mark.parametrize("url", ["ftp://lab.example/", "https://user:pass@lab.example/", "https://lab.example/?x=1",
+                                 "https://lab.example/#x", "https://lab.example/lab/%61", "https://lab.example/lab/../a",
+                                 "https://lab.example:bad/", "https://lab.example\\@outside.invalid/", "https://lab.exa mple/"])
+def test_target_url_validation(url):
+    with pytest.raises(ValueError):
+        WebTarget.model_validate({**target_config(), "urls": [url]})
+
+
+def test_target_url_normalization_and_uniqueness(tmp_path, monkeypatch):
+    assert normalize_target_url(" HTTPS://LAB.EXAMPLE:443/lab/a/ ") == "https://lab.example/lab/a"
+    assert normalize_target_url("http://[::1]:18880/") == "http://[::1]:18880"
+    config = {**target_config(), "urls": ["https://lab.example/lab/a/"]}
+    filename = tmp_path / "targets.json"
+    filename.write_text(json.dumps({"a": config, "b": {**config, "base_url": "http://127.0.0.1:18882"}}))
+    monkeypatch.setenv("REDTEAM_TARGETS_FILE", str(filename))
+    with pytest.raises(ValueError, match="exactly one"):
+        load_targets()
