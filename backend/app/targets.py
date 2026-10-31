@@ -14,6 +14,21 @@ from pydantic import Field, model_validator
 from .contracts import Contract
 
 
+def normalize_target_url(value):
+    value = value.strip()
+    url = urlsplit(value)
+    port = url.port
+    if (url.scheme not in {"http", "https"} or not url.hostname or url.username is not None
+            or url.password is not None or "?" in value or "#" in value
+            or any(c.isspace() for c in value) or any(c in value for c in ("\\", "%"))
+            or any(p in {".", ".."} for p in url.path.split("/"))):
+        raise ValueError("Enter a registered HTTP(S) site URL without credentials, query or fragment")
+    host = f"[{url.hostname}]" if ":" in url.hostname else url.hostname
+    if port is not None and port != {"http": 80, "https": 443}[url.scheme]:
+        host += f":{port}"
+    return f"{url.scheme}://{host}{url.path.rstrip('/')}"
+
+
 def local_path(value):
     parts = urlsplit(value)
     if (not value.startswith("/") or value.startswith("//") or parts.scheme or parts.netloc
@@ -40,6 +55,9 @@ class Resource(Contract):
 
 class WebTarget(Contract):
     base_url: str
+    name: str = ""
+    environment: Literal["vulnerable", "fixed"] = "vulnerable"
+    urls: list[str] = Field(default_factory=list, max_length=10)
     allowed_paths: list[str] = Field(min_length=1, max_length=30)
     resources: list[Resource] = Field(min_length=2, max_length=20)
     accounts: dict[Literal["A", "B"], Login]
@@ -56,6 +74,7 @@ class WebTarget(Contract):
                 or url.username or url.password or url.query or url.fragment or url.path not in {"", "/"}):
             raise ValueError("Target must be an explicit loopback IP origin with a port")
         self.base_url = self.base_url.rstrip("/")
+        self.urls = list(dict.fromkeys(normalize_target_url(value) for value in self.urls))
         for path in self.allowed_paths:
             local_path(path)
         if set(self.accounts) != {"A", "B"} or {r.owner for r in self.resources} != {"A", "B"}:
@@ -78,7 +97,14 @@ def load_targets():
     if not filename:
         return {}
     raw = json.loads(Path(filename).read_text(encoding="utf-8-sig"))
-    return {key: WebTarget.model_validate(value) for key, value in raw.items()}
+    targets = {key: WebTarget.model_validate(value) for key, value in raw.items()}
+    seen = set()
+    for target in targets.values():
+        urls = {normalize_target_url(target.base_url), *target.urls}
+        if seen & urls:
+            raise ValueError("Each target URL must belong to exactly one registered target")
+        seen.update(urls)
+    return targets
 
 
 class HiddenFields(HTMLParser):

@@ -2,13 +2,33 @@
 
 대상 프론트: https://super-red-team-frontend.vercel.app/
 
-현재 공개 사이트에는 변경을 배포하지 않았습니다. 연결된 GitHub 계정은 `5ceansdeep/super-red-team-frontend`에 읽기 권한만 있으며, 연결된 Vercel 계정에도 이 프로젝트가 없습니다. 백엔드 호스팅도 아직 없습니다. 아래 로컬 검증과 공개 연결을 구분해야 합니다.
+백엔드 운영 주소는 `https://homeserver.tail72d30b.ts.net:10000`입니다. 프론트는 이 주소와 Bearer 접근 토큰으로 연결합니다. 토큰을 공개 프론트 코드나 `VITE_` 환경변수에 고정하지 마세요.
+
+## 대상 사이트 URL 입력
+
+실행 설정에서 웹 시나리오를 선택하고 점검 대상 사이트 URL을 입력합니다. 백엔드 연결 주소와는 다른 값입니다. 서버는 등록한 공개 URL 또는 내부 URL을 대상 ID에 대응시킨 뒤, 기존 내부 루프백 주소로만 HTTP 요청을 보냅니다. 입력 URL로 DNS 조회나 임의 외부 요청을 하지 않습니다.
+
+| 대상 | 입력할 공개 URL | 내부 연결 | 환경 |
+| --- | --- | --- | --- |
+| VM A | `https://homeserver.tail72d30b.ts.net:10000/lab/a/` | `http://127.0.0.1:18880` | vulnerable |
+| VM B | `https://homeserver.tail72d30b.ts.net:10000/lab/b/` | `http://127.0.0.1:18882` | vulnerable |
+| 패치 VM | `https://homeserver.tail72d30b.ts.net:10000/lab/patched/` | `http://127.0.0.1:18881` | fixed |
+
+`backend/targets.example.json`은 세 대상의 설정 예시입니다. 실제 설정은 기존 계정·리소스·판정 marker를 유지하고 `name`, `environment`, `urls`를 등록한 후 `REDTEAM_TARGETS_FILE`로 읽습니다. Secret의 계정이나 marker는 공개 저장소에 올리지 않습니다.
+
+```json
+{"scenario":"web-access-v1","target_url":"https://homeserver.tail72d30b.ts.net:10000/lab/patched/","mode":"mock"}
+```
+
+서버는 대상의 실제 환경을 적용하고 URL과 확정된 `target_id`를 실행 및 보고서에 보존합니다. 기존 `target_id` 요청은 계속 지원합니다. 두 값을 함께 보내면 같은 대상을 가리켜야 합니다. 미등록 URL, 쿼리/fragment/자격 증명을 포함한 주소는 422로 거부합니다.
+
+프론트는 `GET /scenarios`의 대상별 URL·환경으로 입력 기본값과 목록을 구성합니다. 대상 URL을 바꾸면 맞는 VM을 선택하며, 실행 요청에는 입력한 `target_url`을 보냅니다. 상세 보고서에도 대상 URL을 표시합니다. 운영 반영은 백엔드 소스·세 대상의 Secret 등록·프론트 소스 재배포가 모두 필요합니다.
 
 ## 로컬 시연
 
 백엔드는 저장소 루트에서 `./start.ps1`로 실행합니다. `backend/.env`를 읽고 127.0.0.1:8000으로 바인딩합니다. 키는 이미 로컬 파일에 저장돼 있으며 Git에서 제외됩니다.
 
-실제 프론트 소스를 기준으로 만든 연동 패치는 `integration/frontend.patch`입니다. 프론트 담당자가 프론트 저장소에서 적용합니다:
+`integration/frontend.patch`는 초기 API 연동용 패치입니다. 이미 API 연동이 적용된 프론트에는 다시 적용하지 마세요. 대상 URL 입력 변경은 최신 프론트 소스에 적용합니다. 아래 명령은 초기 연동이 없는 이전 소스에만 해당합니다:
 
 ```powershell
 git apply --check ../super-red-team/integration/frontend.patch

@@ -27,6 +27,7 @@ class ExecutionRequest(Contract):
     mode: Literal["mock", "live"] = "mock"
     scenario: Literal["orders-v1", "web-access-v1"] = "orders-v1"
     target_id: str | None = Field(default=None, min_length=1, max_length=100)
+    target_url: str | None = Field(default=None, min_length=1, max_length=2048)
     environment: Literal["vulnerable", "fixed"] = "vulnerable"
     collaboration: Literal["independent"] = "independent"
     information: Literal["gray-box"] = "gray-box"
@@ -39,8 +40,8 @@ class ExecutionRequest(Contract):
 
     @model_validator(mode="after")
     def distinct_models(self):
-        if (self.scenario == "web-access-v1") != (self.target_id is not None):
-            raise ValueError("web-access-v1 requires target_id; orders-v1 must not set target_id")
+        if (self.scenario == "web-access-v1") != (self.target_id is not None or self.target_url is not None):
+            raise ValueError("web-access-v1 requires target_id or target_url; orders-v1 must not set either")
         if len({a.model for a in self.agents}) != len(self.agents):
             raise ValueError("Distinct registered models are required")
         return self
